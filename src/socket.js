@@ -1,9 +1,8 @@
-import { Server as SocketIOServer } from "socket.io";
-import type { Server } from "http";
+const { Server: SocketIOServer } = require("socket.io");
 
-let io: SocketIOServer | null = null;
+let io = null;
 
-export function initSocket(server: Server) {
+function initSocket(server) {
   if (io) return io; // prevent double initialisation
 
   io = new SocketIOServer(server, {
@@ -30,11 +29,12 @@ export function initSocket(server: Server) {
   });
 
   console.log("Socket.IO initialized");
-
   return io;
 }
 
-export function getIO() {
+function getIO() {
   if (!io) throw new Error("Socket.IO not initialized");
   return io;
 }
+
+module.exports = { initSocket, getIO };
