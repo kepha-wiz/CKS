@@ -1,5 +1,12 @@
-// src/app/api/chat/route.ts
 import { NextRequest, NextResponse } from "next/server";
+
+/**
+ * Self-contained chat API route optimized for Render deployment.
+ * - Works without any external SDKs or env vars.
+ * - Will attempt Serper or ZAI only if corresponding env vars are present.
+ * - If external services are unavailable, it produces a helpful, well-formatted fallback response.
+ * - Optimized for serverless environments with proper error handling.
+ */
 
 /* -------------------------
    SYSTEM PROMPT / FORMATTING
@@ -20,27 +27,24 @@ Keep replies concise, helpful, and polite.`;
 /* -------------------------
    SEARCH + FALLBACK LOGIC
    ------------------------- */
-interface SearchResult {
-  title: string;
-  url: string;
-  snippet: string;
-  position: number;
-}
-
-async function searchWithFallback(query: string): Promise<SearchResult[]> {
-  const methods: (() => Promise<SearchResult[]>)[] = [];
+async function searchWithFallback(query) {
+  // If SERPER_API_KEY is set, try Serper first
+  const methods = [];
 
   if (process.env.SERPER_API_KEY) {
     methods.push(async () => {
       const apiKey = process.env.SERPER_API_KEY;
       const res = await fetch("https://google.serper.dev/search", {
         method: "POST",
-        headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+        headers: {
+          "X-API-KEY": apiKey,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ q: query, num: 5 }),
       });
       if (!res.ok) throw new Error(`Serper failed: ${res.status}`);
       const data = await res.json();
-      return (data.organic || []).map((item: any, idx: number) => ({
+      return (data.organic || []).map((item, idx) => ({
         title: item.title || `Result ${idx + 1}`,
         url: item.link || item.displayed_link || "https://example.com",
         snippet: item.snippet || "",
@@ -49,40 +53,26 @@ async function searchWithFallback(query: string): Promise<SearchResult[]> {
     });
   }
 
-  if (process.env.ZAI_ENABLED === "1") {
-    methods.push(async () => {
-      try {
-        const ZAI = await import("z-ai-web-dev-sdk");
-        const zai = await ZAI.default.create();
-        const result = await zai.functions.invoke("web_search", { query, num: 5 });
-        if (!result) throw new Error("ZAI returned no results");
-        return result.map((item: any, idx: number) => ({
-          title: item.name || `Result ${idx + 1}`,
-          url: item.url || "https://example.com",
-          snippet: item.snippet || "",
-          position: idx + 1,
-        }));
-      } catch (err) {
-        throw err;
-      }
-    });
-  }
+  // Always include a safe local fallback
+  methods.push(async () => {
+    return [
+      {
+        title: `About "${query}"`,
+        url: "https://example.com",
+        snippet:
+          "External search is not configured or temporarily unavailable. This is a local fallback summary.",
+        position: 1,
+      },
+    ];
+  });
 
-  methods.push(async () => [
-    {
-      title: `About "${query}"`,
-      url: "https://example.com",
-      snippet:
-        "External search is not configured or temporarily unavailable. This is a local fallback summary.",
-      position: 1,
-    },
-  ]);
-
+  // Execute each method until success
   for (const method of methods) {
     try {
       const results = await method();
       if (Array.isArray(results) && results.length > 0) return results;
-    } catch (err: any) {
+    } catch (err) {
+      // Try next method
       console.warn("Search method failed:", err?.message || err);
       continue;
     }
@@ -94,17 +84,19 @@ async function searchWithFallback(query: string): Promise<SearchResult[]> {
 /* -------------------------
    FORMATTERS
    ------------------------- */
-function formatSearchContext(results: SearchResult[]): string {
+function formatSearchContext(results) {
   if (!results || results.length === 0) return "";
   return results
     .map(
       (r, i) =>
-        `[${i + 1}] ${r.title}\n${r.snippet ? r.snippet + "\n" : ""}Source: ${r.url}`
+        `[${i + 1}] ${r.title}\n${r.snippet ? r.snippet + "\n" : ""}Source: ${
+          r.url
+        }`
     )
     .join("\n\n");
 }
 
-function formatSources(results: SearchResult[]): string {
+function formatSources(results) {
   if (!results || results.length === 0) return "";
   return (
     "\n\n---\n\n**🔗 Sources:**\n" +
@@ -122,15 +114,21 @@ function formatSources(results: SearchResult[]): string {
 /* -------------------------
    SIMPLE LOCAL "AI" FALLBACK
    ------------------------- */
-function localAIGenerate(userMessage: string, searchResults: SearchResult[]): string {
+/**
+ * If external AI (ZAI) is unavailable, use a deterministic, helpful
+ * fallback generator that respects the SYSTEM_PROMPT style.
+ */
+function localAIGenerate(userMessage, searchResults) {
+  // Basic heuristics to craft a helpful answer
   const title = `💡 Quick answer about "${userMessage}"\n\n`;
-  const directAnswer =
-    "• **Direct answer:** I couldn't access an external AI service right now, but here's a concise, helpful summary based on the input and local knowledge.\n\n";
+  const directAnswer = `• **Direct answer:** I couldn't access an external AI service right now, but here's a concise, helpful summary based on the input and local knowledge.\n\n`;
   const bullets = [
     `• **What it is:** A short explanation related to "${userMessage}".`,
     `• **How it matters:** Practical implications or reasons this is useful.`,
     `• **Next steps:** What the user can try next (e.g., search more, clarify, or provide more context).`,
-  ].join("\n");
+  ]
+    .map((b) => b)
+    .join("\n");
 
   const details = `\n\n**Details & Context:**\n- This fallback reply is generated locally when external AI/search services are not configured.\n- Provide more detail or a specific angle (e.g., "history", "examples", "code") and I'll expand.\n`;
 
@@ -144,21 +142,29 @@ function localAIGenerate(userMessage: string, searchResults: SearchResult[]): st
 /* -------------------------
    MAIN ROUTE
    ------------------------- */
-export async function POST(request: NextRequest): Promise<NextResponse> {
+export async function POST(request) {
   try {
     const body = await request.json().catch(() => null);
     const message = body?.message ?? null;
 
     if (!message || typeof message !== "string" || message.trim() === "") {
-      return NextResponse.json({ error: "Message is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Message is required" },
+        { status: 400 }
+      );
     }
 
+    // 1) Attempt web search (if possible), otherwise fallback
     const searchResults = await searchWithFallback(message);
     const searchContext = formatSearchContext(searchResults);
 
-    let aiContent: string | null = null;
+    // 2) If ZAI is configured and available, try using it dynamically.
+    //    We do a safe dynamic import and only use it if both the env flag
+    //    and the module exist. This avoids any crash when module is absent.
+    let aiContent = null;
     if (process.env.ZAI_ENABLED === "1") {
       try {
+        // Dynamic import - may fail if the module isn't installed; that's fine
         const ZAI = await import("z-ai-web-dev-sdk");
         if (ZAI?.default) {
           const zaiClient = await ZAI.default.create();
@@ -176,24 +182,32 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             temperature: 0.7,
             max_tokens: 1200,
           });
-          aiContent = completion?.choices?.[0]?.message?.content ?? null;
+          aiContent =
+            completion?.choices?.[0]?.message?.content ??
+            null;
         }
-      } catch {
+      } catch (err) {
+        console.warn("ZAI dynamic integration failed:", err?.message || err);
         aiContent = null;
       }
     }
 
-    const finalResponse = aiContent
-      ? aiContent + formatSources(searchResults)
-      : localAIGenerate(message, searchResults);
+    // 3) If we got an aiContent from ZAI, use it; otherwise generate locally
+    let finalResponse;
+    if (aiContent) {
+      finalResponse = aiContent + formatSources(searchResults);
+    } else {
+      finalResponse = localAIGenerate(message, searchResults);
+    }
 
     return NextResponse.json({
       response: finalResponse,
       sources: searchResults,
       timestamp: new Date().toISOString(),
     });
-  } catch (err: any) {
+  } catch (err) {
     console.error("Chat API unexpected error:", err?.message || err);
+
     return NextResponse.json({
       response:
         "I apologize, but I'm experiencing technical difficulties at the moment. Please try again later.",
@@ -202,4 +216,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       error: err?.message || String(err),
     });
   }
+}
+
+// Add GET method for health check
+export async function GET() {
+  return NextResponse.json({
+    status: "healthy",
+    message: "CKS Chat API is running",
+    timestamp: new Date().toISOString(),
+  });
 }
