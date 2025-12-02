@@ -1,215 +1,244 @@
-import { NextRequest, NextResponse } from 'next/server';
-import ZAI from 'z-ai-web-dev-sdk';
+import { NextRequest, NextResponse } from "next/server";
 
-// System prompt for professional AI responses with visual appeal
+/**
+ * Self-contained chat API route optimized for Render deployment.
+ * - Works without any external SDKs or env vars.
+ * - Will attempt Serper or ZAI only if corresponding env vars are present.
+ * - If external services are unavailable, it produces a helpful, well-formatted fallback response.
+ * - Optimized for serverless environments with proper error handling.
+ */
+
+/* -------------------------
+   SYSTEM PROMPT / FORMATTING
+   ------------------------- */
 const SYSTEM_PROMPT = `You are CKS AI, a professional AI assistant created by CKS-Tech. You provide visually appealing, well-structured responses with proper formatting.
 
-## Your Response Guidelines:
-
-### 🎯 **Visually Appealing Format**
+Guidelines (for formatting in the response):
 - Use emojis to make responses engaging and scannable
 - Use bullet points (•) and numbered lists for clarity
 - Use **bold text** for emphasis and headers
 - Use proper spacing and line breaks for readability
 - Create visual hierarchy with different formatting elements
 
-### 🔍 **When Web Search Results Are Available**
-- Integrate search information naturally into your response
-- Reference sources using numbered format like [1], [2], etc.
-- Provide clickable source links at the end in a clean format
-- Combine multiple sources for comprehensive answers
+When web search results are available, include a Sources section at the bottom.
 
-### 📝 **Response Structure**
-1. **Catchy Title**: Start with an engaging header and emoji
-2. **Direct Answer**: Provide clear, direct response
-3. **Key Points**: Use bullet points (•) for main information
-4. **Details & Context**: Add relevant information with proper formatting
-5. **Sources**: List all references with clickable links
-6. **Follow-up**: Suggest 2-3 relevant follow-up questions when appropriate
+Keep replies concise, helpful, and polite.`;
 
-### 🔗 **Source Format**
-At the end of your response, include:
----
-**🔗 Sources:**
-[1] [Title of Source](URL) - Brief description
-[2] [Title of Source](URL) - Brief description
+/* -------------------------
+   SEARCH + FALLBACK LOGIC
+   ------------------------- */
+async function searchWithFallback(query) {
+  // If SERPER_API_KEY is set, try Serper first
+  const methods = [];
 
-### ✨ **Visual Elements to Use**
-- Emojis for section headers and emphasis: 🎯, 🔍, 📊, 💡, ✨, 🚀, etc.
-- Bullet points: • for lists
-- Bold text: **important points**
-- Numbered lists for sequential information
-- Line breaks for better readability
-- Horizontal rules (---) to separate sections
-
-### 🚫 **What to Avoid**
-- Don't use raw asterisks without proper markdown formatting
-- Don't create walls of text - break it up visually
-- Don't say "As an AI assistant..." or similar phrases
-- Don't use complex markdown tables (keep it simple)
-
-Remember: Make your responses visually appealing, easy to read, and engaging while maintaining professionalism.`;
-
-async function searchWithFallback(query: string) {
-  // Try multiple search methods
-  const searchMethods = [
-    // Method 1: Serper API
-    async () => {
-      const response = await fetch('https://google.serper.dev/search', {
-        method: 'POST',
+  if (process.env.SERPER_API_KEY) {
+    methods.push(async () => {
+      const apiKey = process.env.SERPER_API_KEY;
+      const res = await fetch("https://google.serper.dev/search", {
+        method: "POST",
         headers: {
-          'X-API-KEY': process.env.SERPER_API_KEY || '',
-          'Content-Type': 'application/json',
+          "X-API-KEY": apiKey,
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          q: query,
-          num: 5,
-        }),
+        body: JSON.stringify({ q: query, num: 5 }),
       });
-
-      if (!response.ok) {
-        throw new Error(`Serper API failed: ${response.status}`);
-      }
-
-      const data = await response.json();
-      return data.organic?.map((item: any, index: number) => ({
-        title: item.title,
-        url: item.link,
-        snippet: item.snippet,
-        position: index + 1,
-      })) || [];
-    },
-
-    // Method 2: ZAI Web Search
-    async () => {
-      const zai = await ZAI.create();
-      const searchResult = await zai.functions.invoke("web_search", {
-        query: query,
-        num: 5
-      });
-
-      return searchResult.map((item: any, index: number) => ({
-        title: item.name,
-        url: item.url,
-        snippet: item.snippet,
-        position: index + 1,
+      if (!res.ok) throw new Error(`Serper failed: ${res.status}`);
+      const data = await res.json();
+      return (data.organic || []).map((item, idx) => ({
+        title: item.title || `Result ${idx + 1}`,
+        url: item.link || item.displayed_link || "https://example.com",
+        snippet: item.snippet || "",
+        position: idx + 1,
       }));
-    },
+    });
+  }
 
-    // Method 3: Fallback mock data
-    async () => {
-      return [
-        {
-          title: "Information about " + query,
-          url: "https://example.com",
-          snippet: "No search results available at the moment. Please try again later.",
-          position: 1
-        }
-      ];
-    }
-  ];
+  // If user enabled ZAI via env flag, attempt dynamic import (won't crash if module not installed)
+  if (process.env.ZAI_ENABLED === "1") {
+    methods.push(async () => {
+      try {
+        // Dynamic import to avoid issues when module is not installed
+        const ZAI = await import("z-ai-web-dev-sdk");
+        const zai = await ZAI.default.create();
+        const result = await zai.functions.invoke("web_search", {
+          query,
+          num: 5,
+        });
+        if (!result) throw new Error("ZAI returned no results");
+        return result.map((item, idx) => ({
+          title: item.name || `Result ${idx + 1}`,
+          url: item.url || "https://example.com",
+          snippet: item.snippet || "",
+          position: idx + 1,
+        }));
+      } catch (err) {
+        // If module isn't installed or the call fails, propagate for fallback
+        throw err;
+      }
+    });
+  }
 
-  // Try each method until one succeeds
-  for (const method of searchMethods) {
+  // Always include a safe local fallback
+  methods.push(async () => {
+    return [
+      {
+        title: `About "${query}"`,
+        url: "https://example.com",
+        snippet:
+          "External search is not configured or temporarily unavailable. This is a local fallback summary.",
+        position: 1,
+      },
+    ];
+  });
+
+  // Execute each method until success
+  for (const method of methods) {
     try {
       const results = await method();
-      if (results && results.length > 0) {
-        return results;
-      }
-    } catch (error) {
-      console.warn('Search method failed:', error);
+      if (Array.isArray(results) && results.length > 0) return results;
+    } catch (err) {
+      // Try next method
+      console.warn("Search method failed:", err?.message || err);
       continue;
     }
   }
 
-  // Return empty array if all methods fail
   return [];
 }
 
-function formatSearchContext(searchResults: any[]) {
-  if (!searchResults || searchResults.length === 0) {
-    return '';
-  }
-
-  return searchResults.map((result, index) => 
-    `[${index + 1}] ${result.title}\n${result.snippet}\nSource: ${result.url}`
-  ).join('\n\n');
+/* -------------------------
+   FORMATTERS
+   ------------------------- */
+function formatSearchContext(results) {
+  if (!results || results.length === 0) return "";
+  return results
+    .map(
+      (r, i) =>
+        `[${i + 1}] ${r.title}\n${r.snippet ? r.snippet + "\n" : ""}Source: ${
+          r.url
+        }`
+    )
+    .join("\n\n");
 }
 
-function formatSources(sources: any[]) {
-  if (!sources || sources.length === 0) {
-    return '';
-  }
-
-  return '\n\n---\n\n**🔗 Sources:**\n' + sources.map((source, index) => 
-    `[${index + 1}] [${source.title}](${source.url}) - ${source.snippet?.substring(0, 100)}...`
-  ).join('\n');
+function formatSources(results) {
+  if (!results || results.length === 0) return "";
+  return (
+    "\n\n---\n\n**🔗 Sources:**\n" +
+    results
+      .map(
+        (r, i) =>
+          `[${i + 1}] [${r.title}](${r.url}) - ${
+            (r.snippet || "").slice(0, 120)
+          }${(r.snippet || "").length > 120 ? "..." : ""}`
+      )
+      .join("\n")
+  );
 }
 
-export async function POST(request: NextRequest) {
+/* -------------------------
+   SIMPLE LOCAL "AI" FALLBACK
+   ------------------------- */
+/**
+ * If external AI (ZAI) is unavailable, use a deterministic, helpful
+ * fallback generator that respects the SYSTEM_PROMPT style.
+ */
+function localAIGenerate(userMessage, searchResults) {
+  // Basic heuristics to craft a helpful answer
+  const title = `💡 Quick answer about "${userMessage}"\n\n`;
+  const directAnswer = `• **Direct answer:** I couldn't access an external AI service right now, but here's a concise, helpful summary based on the input and local knowledge.\n\n`;
+  const bullets = [
+    `• **What it is:** A short explanation related to "${userMessage}".`,
+    `• **How it matters:** Practical implications or reasons this is useful.`,
+    `• **Next steps:** What the user can try next (e.g., search more, clarify, or provide more context).`,
+  ]
+    .map((b) => b)
+    .join("\n");
+
+  const details = `\n\n**Details & Context:**\n- This fallback reply is generated locally when external AI/search services are not configured.\n- Provide more detail or a specific angle (e.g., "history", "examples", "code") and I'll expand.\n`;
+
+  const sourcesPart = formatSources(searchResults);
+
+  const followUps = `\n\n**Suggested follow-up questions:**\n1. Could you give me more specific details or context about "${userMessage}"?\n2. Do you want examples, code, or a step-by-step guide?\n3. Would you like me to attempt a web search (if you add a SERPER_API_KEY)?`;
+
+  return `${title}${directAnswer}${bullets}${details}${sourcesPart}${followUps}`;
+}
+
+/* -------------------------
+   MAIN ROUTE
+   ------------------------- */
+export async function POST(request) {
   try {
-    const { message } = await request.json();
+    const body = await request.json().catch(() => null);
+    const message = body?.message ?? null;
 
-    if (!message) {
+    if (!message || typeof message !== "string" || message.trim() === "") {
       return NextResponse.json(
-        { error: 'Message is required' },
+        { error: "Message is required" },
         { status: 400 }
       );
     }
 
-    // Perform web search
+    // 1) Attempt web search (if possible), otherwise fallback
     const searchResults = await searchWithFallback(message);
     const searchContext = formatSearchContext(searchResults);
 
-    // Create AI messages
-    const messages = [
-      {
-        role: 'system',
-        content: SYSTEM_PROMPT
+    // 2) If ZAI is configured and available, try using it dynamically.
+    //    We do a safe dynamic import and only use it if both the env flag
+    //    and the module exist. This avoids any crash when module is absent.
+    let aiContent = null;
+    if (process.env.ZAI_ENABLED === "1") {
+      try {
+        // Dynamic import - may fail if the module isn't installed; that's fine
+        const ZAI = await import("z-ai-web-dev-sdk");
+        if (ZAI?.default) {
+          const zaiClient = await ZAI.default.create();
+          const messages = [
+            { role: "system", content: SYSTEM_PROMPT },
+            {
+              role: "user",
+              content: searchContext
+                ? `Context from web search:\n\n${searchContext}\n\nUser question: ${message}`
+                : message,
+            },
+          ];
+          const completion = await zaiClient.chat.completions.create({
+            messages,
+            temperature: 0.7,
+            max_tokens: 1200,
+          });
+          aiContent =
+            completion?.choices?.[0]?.message?.content ??
+            null;
+        }
+      } catch (err) {
+        console.warn("ZAI dynamic integration failed:", err?.message || err);
+        aiContent = null;
       }
-    ];
-
-    // Add search context if available
-    if (searchContext) {
-      messages.push({
-        role: 'user',
-        content: `Context from web search:\n\n${searchContext}\n\nUser question: ${message}`
-      });
-    } else {
-      messages.push({
-        role: 'user',
-        content: message
-      });
     }
 
-    // Get AI response
-    const zai = await ZAI.create();
-    const completion = await zai.chat.completions.create({
-      messages: messages,
-      temperature: 0.7,
-      max_tokens: 1000,
-    });
-
-    const aiResponse = completion.choices[0]?.message?.content || 'I apologize, but I could not generate a response at the moment.';
-    
-    // Add sources to the response
-    const finalResponse = aiResponse + formatSources(searchResults);
+    // 3) If we got an aiContent from ZAI, use it; otherwise generate locally
+    let finalResponse;
+    if (aiContent) {
+      finalResponse = aiContent + formatSources(searchResults);
+    } else {
+      finalResponse = localAIGenerate(message, searchResults);
+    }
 
     return NextResponse.json({
       response: finalResponse,
       sources: searchResults,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
+  } catch (err) {
+    console.error("Chat API unexpected error:", err?.message || err);
 
-  } catch (error) {
-    console.error('Chat API error:', error);
-    
-    // Fallback response
     return NextResponse.json({
-      response: 'I apologize, but I\'m experiencing technical difficulties at the moment. Please try again later.',
+      response:
+        "I apologize, but I'm experiencing technical difficulties at the moment. Please try again later.",
       sources: [],
       timestamp: new Date().toISOString(),
-      error: error.message
+      error: err?.message || String(err),
     });
   }
 }
