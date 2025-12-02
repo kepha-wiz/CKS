@@ -12,7 +12,7 @@ app.prepare().then(() => {
     handle(req, res);
   });
 
-  // attach socket.io
+  // Initialize Socket.IO on the same server
   initSocket(server);
 
   server.listen(port, () => {
