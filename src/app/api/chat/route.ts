@@ -1,36 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /* -------------------------
-   SYSTEM PROMPT / FORMATTING
-   ------------------------- */
-const SYSTEM_PROMPT = `You are CKS AI, a professional AI assistant created by CKS-Tech. You provide visually appealing, well-structured responses with proper formatting.
-
-Guidelines:
-- Use emojis to make responses engaging
-- Use bullet points (•) and numbered lists for clarity
-- Use **bold text** for emphasis and headers
-- Proper spacing and line breaks for readability
-- Create visual hierarchy with formatting
-`;
-
-/* -------------------------
-   SEARCH + FALLBACK LOGIC
-   ------------------------- */
+   SEARCH FUNCTION
+------------------------- */
 async function searchWithFallback(query: string) {
-  const methods = [];
-
+  // Only Serper API for search
   if (process.env.SERPER_API_KEY) {
-    methods.push(async () => {
-      const apiKey = process.env.SERPER_API_KEY;
+    try {
       const res = await fetch("https://google.serper.dev/search", {
         method: "POST",
         headers: {
-          "X-API-KEY": apiKey,
+          "X-API-KEY": process.env.SERPER_API_KEY,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ q: query, num: 5 }),
+        body: JSON.stringify({ q: query, num: 8 }), // Increased to 8 for better synthesis
       });
-      if (!res.ok) throw new Error(`Serper failed: ${res.status}`);
+
+      if (!res.ok) throw new Error(`Serper API failed: ${res.status}`);
+
       const data = await res.json();
       return (data.organic || []).map((item: any, idx: number) => ({
         title: item.title || `Result ${idx + 1}`,
@@ -38,131 +25,265 @@ async function searchWithFallback(query: string) {
         snippet: item.snippet || "",
         position: idx + 1,
       }));
-    });
-  }
-
-  // Local fallback
-  methods.push(async () => [
-    {
-      title: `About "${query}"`,
-      url: "https://example.com",
-      snippet:
-        "External search is not configured or temporarily unavailable. This is a local fallback summary.",
-      position: 1,
-    },
-  ]);
-
-  for (const method of methods) {
-    try {
-      const results = await method();
-      if (Array.isArray(results) && results.length > 0) return results;
     } catch (err) {
-      console.warn("Search method failed:", err?.message || err);
-      continue;
+      console.warn("Serper search failed:", err);
     }
   }
 
+  // If search fails, return empty array
   return [];
 }
 
-function formatSearchContext(results: any[]) {
-  if (!results || results.length === 0) return "";
-  return results
-    .map(
-      (r, i) =>
-        `[${i + 1}] ${r.title}\n${r.snippet ? r.snippet + "\n" : ""}Source: ${
-          r.url
-        }`
-    )
-    .join("\n\n");
-}
+/* -------------------------
+   INTELLIGENT SYNTHESIS
+------------------------- */
+function synthesizeFromSearch(query: string, searchResults: any[]) {
+  if (!searchResults || searchResults.length === 0) {
+    return `🔍 I couldn't find specific information about "${query}". This could be due to:\n\n• The query being very specific or recent\n• Limited information available on this topic\n• Possible spelling or phrasing issues\n\nTry rephrasing your question or provide more context.`;
+  }
 
-function formatSources(results: any[]) {
-  if (!results || results.length === 0) return "";
-  return (
-    "\n\n---\n\n**🔗 Sources:**\n" +
-    results
-      .map(
-        (r, i) =>
-          `[${i + 1}] [${r.title}](${r.url}) - ${
-            (r.snippet || "").slice(0, 120)
-          }${(r.snippet || "").length > 120 ? "..." : ""}`
-      )
-      .join("\n")
-  );
+  // Extract key information from search results
+  const topResults = searchResults.slice(0, 5);
+  
+  // Identify common themes and extract key facts
+  const keyFacts = extractKeyFacts(topResults);
+  const themes = identifyThemes(topResults);
+  
+  // Determine the type of query to customize response
+  const queryType = determineQueryType(query);
+  
+  // Build contextual introduction
+  const intro = generateIntroduction(query, queryType, themes);
+  
+  // Build main content with synthesized information
+  const mainContent = generateMainContent(query, queryType, keyFacts, topResults);
+  
+  // Build conclusion with additional insights
+  const conclusion = generateConclusion(query, queryType, themes);
+  
+  // Build sources section
+  const sources = searchResults
+    .slice(0, 5)
+    .map((r, i) => `[${i + 1}] [${r.title}](${r.url})`)
+    .join("\n");
+
+  return `${intro}\n\n${mainContent}\n\n${conclusion}\n\n---\n\n**🔗 Sources:**\n${sources}`;
 }
 
 /* -------------------------
-   LOCAL FALLBACK GENERATOR
-   ------------------------- */
-function localAIGenerate(userMessage: string, searchResults: any[]) {
-  const title = `💡 Quick answer about "${userMessage}"\n\n`;
-  const directAnswer = `• **Direct answer:** I couldn't access an external AI service right now, but here's a concise, helpful summary based on the input and local knowledge.\n\n`;
-  const bullets = [
-    `• **What it is:** A short explanation related to "${userMessage}".`,
-    `• **How it matters:** Practical implications or reasons this is useful.`,
-    `• **Next steps:** What the user can try next (e.g., search more, clarify, or provide more context).`,
-  ].join("\n");
+   HELPER FUNCTIONS FOR INTELLIGENT SYNTHESIS
+------------------------- */
+function extractKeyFacts(results: any[]) {
+  // Extract key facts from search results
+  const facts = [];
+  
+  // Look for numerical data, dates, specific claims
+  results.forEach(result => {
+    const snippet = result.snippet;
+    
+    // Extract years/dates
+    const years = snippet.match(/\b(19|20)\d{2}\b/g);
+    if (years && years.length > 0) {
+      facts.push(`Date reference: ${years.join(", ")}`);
+    }
+    
+    // Extract percentages
+    const percentages = snippet.match(/\b\d+%\b/g);
+    if (percentages && percentages.length > 0) {
+      facts.push(`Statistical data: ${percentages.join(", ")}`);
+    }
+    
+    // Extract measurements
+    const measurements = snippet.match(/\b\d+\s*(km|mi|kg|lb|°C|°F|ft|m|cm|mm)\b/gi);
+    if (measurements && measurements.length > 0) {
+      facts.push(`Measurements: ${measurements.join(", ")}`);
+    }
+  });
+  
+  return facts;
+}
 
-  const details = `\n\n**Details & Context:**\n- This fallback reply is generated locally when external AI/search services are not configured.\n- Provide more detail or a specific angle (e.g., "history", "examples", "code") and I'll expand.\n`;
+function identifyThemes(results: any[]) {
+  // Identify common themes across search results
+  const themes = new Set();
+  
+  // Common theme keywords
+  const themeKeywords = {
+    "Technology": ["technology", "software", "app", "digital", "computer", "online", "website"],
+    "Science": ["research", "study", "scientist", "experiment", "discovery", "analysis"],
+    "Business": ["company", "business", "market", "economy", "financial", "revenue", "profit"],
+    "Health": ["health", "medical", "treatment", "disease", "symptoms", "doctor", "hospital"],
+    "Entertainment": ["movie", "music", "game", "show", "entertainment", "celebrity"],
+    "Sports": ["sport", "game", "team", "player", "match", "championship", "score"],
+    "Education": ["education", "school", "university", "student", "learning", "course"],
+    "Politics": ["government", "policy", "political", "election", "vote", "law"],
+    "History": ["history", "historical", "ancient", "past", "century", "decade"],
+  };
+  
+  results.forEach(result => {
+    const text = `${result.title} ${result.snippet}`.toLowerCase();
+    
+    Object.entries(themeKeywords).forEach(([theme, keywords]) => {
+      if (keywords.some(keyword => text.includes(keyword))) {
+        themes.add(theme);
+      }
+    });
+  });
+  
+  return Array.from(themes);
+}
 
-  const sourcesPart = formatSources(searchResults);
+function determineQueryType(query: string) {
+  const lowerQuery = query.toLowerCase();
+  
+  // Check for question types
+  if (lowerQuery.startsWith("what is") || lowerQuery.startsWith("define")) {
+    return "definition";
+  } else if (lowerQuery.startsWith("how to") || lowerQuery.includes("how do")) {
+    return "howto";
+  } else if (lowerQuery.startsWith("why") || lowerQuery.includes("reason")) {
+    return "explanation";
+  } else if (lowerQuery.includes("compare") || lowerQuery.includes("vs") || lowerQuery.includes("versus")) {
+    return "comparison";
+  } else if (lowerQuery.includes("review") || lowerQuery.includes("rating") || lowerQuery.includes("opinion")) {
+    return "review";
+  } else if (lowerQuery.includes("history") || lowerQuery.includes("origin")) {
+    return "historical";
+  } else if (lowerQuery.includes("news") || lowerQuery.includes("recent") || lowerQuery.includes("latest")) {
+    return "news";
+  } else if (lowerQuery.includes("benefit") || lowerQuery.includes("advantage") || lowerQuery.includes("pro")) {
+    return "benefits";
+  } else if (lowerQuery.includes("disadvantage") || lowerQuery.includes("con") || lowerQuery.includes("risk")) {
+    return "drawbacks";
+  } else {
+    return "general";
+  }
+}
 
-  const followUps = `\n\n**Suggested follow-up questions:**\n1. Could you give more specific details or context about "${userMessage}"?\n2. Do you want examples, code, or a step-by-step guide?\n3. Would you like me to attempt a web search (if you add a SERPER_API_KEY)?`;
+function generateIntroduction(query: string, queryType: string, themes: string[]) {
+  const themeText = themes.length > 0 ? ` This topic relates to ${themes.join(", ")} fields.` : "";
+  
+  switch (queryType) {
+    case "definition":
+      return `📚 **Understanding ${query}**\n\nHere's what you need to know about this topic.${themeText}`;
+    case "howto":
+      return `🛠️ **How to ${query.replace("how to", "").trim()}**\n\nHere's a comprehensive approach based on current information.${themeText}`;
+    case "explanation":
+      return `🔍 **Why ${query.replace("why", "").trim()}**\n\nHere are the key factors and explanations.${themeText}`;
+    case "comparison":
+      return `⚖️ **Comparing ${query}**\n\nHere's how these options stack up against each other.${themeText}`;
+    case "review":
+      return `⭐ **Review of ${query}**\n\nHere's what the information reveals about this topic.${themeText}`;
+    case "historical":
+      return `📜 **Historical context of ${query}**\n\nHere's the background and development over time.${themeText}`;
+    case "news":
+      return `📰 **Latest on ${query}**\n\nHere's the most current information available.${themeText}`;
+    case "benefits":
+      return `✅ **Benefits of ${query}**\n\nHere are the advantages and positive aspects.${themeText}`;
+    case "drawbacks":
+      return `⚠️ **Potential drawbacks of ${query}**\n\nHere are the limitations and considerations.${themeText}`;
+    default:
+      return `💡 **About ${query}**\n\nHere's what I found based on current information.${themeText}`;
+  }
+}
 
-  return `${title}${directAnswer}${bullets}${details}${sourcesPart}${followUps}`;
+function generateMainContent(query: string, queryType: string, keyFacts: string[], results: any[]) {
+  let content = "";
+  
+  // Add key facts if available
+  if (keyFacts.length > 0) {
+    content += `**Key Information:**\n${keyFacts.map(fact => `• ${fact}`).join("\n")}\n\n`;
+  }
+  
+  // Synthesize main points from top results
+  const mainPoints = results.slice(0, 3).map(result => {
+    // Clean up the snippet for better readability
+    let snippet = result.snippet;
+    
+    // Remove redundant phrases
+    snippet = snippet.replace(/click here for more information/gi, "");
+    snippet = snippet.replace(/read more/gi, "");
+    snippet = snippet.replace(/learn more/gi, "");
+    
+    // Format as a bullet point
+    return `• ${snippet}`;
+  });
+  
+  if (mainPoints.length > 0) {
+    content += `**Main Points:**\n${mainPoints.join("\n")}`;
+  }
+  
+  // Add query-specific content
+  switch (queryType) {
+    case "howto":
+      content += "\n\n**Steps to Consider:**\n• Research the specific requirements for your situation\n• Gather necessary resources or tools\n• Follow established best practices\n• Consider potential challenges and how to address them";
+      break;
+    case "explanation":
+      content += "\n\n**Factors to Consider:**\n• Context and circumstances\n• Historical background\n• Current trends and developments\n• Expert opinions and research";
+      break;
+    case "comparison":
+      content += "\n\n**Comparison Factors:**\n• Features and capabilities\n• Performance and efficiency\n• Cost and value\n• User experiences and reviews";
+      break;
+  }
+  
+  return content;
+}
+
+function generateConclusion(query: string, queryType: string, themes: string[]) {
+  let conclusion = "";
+  
+  switch (queryType) {
+    case "definition":
+      conclusion = "This definition should provide a solid foundation for understanding the topic. For more specific information, consider exploring particular aspects that interest you.";
+      break;
+    case "howto":
+      conclusion = "Following these steps should help you achieve your goal. Remember that specific situations may require adjustments to this general approach.";
+      break;
+    case "explanation":
+      conclusion = "These factors help explain the reasoning behind the topic. Keep in mind that complex issues often have multiple contributing factors.";
+      break;
+    case "comparison":
+      conclusion = "This comparison should help you make an informed decision. Consider your specific needs and priorities when choosing between options.";
+      break;
+    case "review":
+      conclusion = "This review provides an overview based on available information. Personal experiences may vary, so consider multiple perspectives.";
+      break;
+    case "historical":
+      conclusion = "This historical context helps understand how the topic developed over time. Current practices and understanding are often built on this foundation.";
+      break;
+    case "news":
+      conclusion = "This information reflects the current state of knowledge. For rapidly evolving topics, check for more recent updates as they become available.";
+      break;
+    case "benefits":
+      conclusion = "These benefits highlight the positive aspects of the topic. Consider how they align with your specific needs and goals.";
+      break;
+    case "drawbacks":
+      conclusion = "These considerations help identify potential challenges. Being aware of them allows for better planning and risk management.";
+      break;
+    default:
+      conclusion = "This information provides a comprehensive overview of the topic. For more specific details, consider exploring particular aspects that interest you.";
+  }
+  
+  return conclusion;
 }
 
 /* -------------------------
-   MAIN ROUTE
-   ------------------------- */
+   POST ROUTE
+------------------------- */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json().catch(() => null);
-    const message = body?.message ?? null;
+    const body = await request.json();
+    const message = body?.message?.trim();
 
-    if (!message || typeof message !== "string" || message.trim() === "") {
+    if (!message) {
       return NextResponse.json({ error: "Message is required" }, { status: 400 });
     }
 
-    // 1) Get search results
+    // Perform search
     const searchResults = await searchWithFallback(message);
-    const searchContext = formatSearchContext(searchResults);
 
-    // 2) If Hugging Face token is available, use it
-    let aiContent: string | null = null;
-
-    if (process.env.HUGGINGFACE_API_KEY) {
-      try {
-        const response = await fetch(
-          "https://api-inference.huggingface.co/models/gpt2", // Replace with a suitable HF model
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              inputs: searchContext
-                ? `Context:\n${searchContext}\n\nQuestion: ${message}`
-                : message,
-              parameters: { max_new_tokens: 250 },
-            }),
-          }
-        );
-
-        const data = await response.json();
-        aiContent = data?.[0]?.generated_text || null;
-      } catch (err) {
-        console.warn("Hugging Face API failed:", err);
-        aiContent = null;
-      }
-    }
-
-    // 3) Use local fallback if HF failed
-    const finalResponse = aiContent
-      ? aiContent + formatSources(searchResults)
-      : localAIGenerate(message, searchResults);
+    // Generate intelligent response from search results
+    const finalResponse = synthesizeFromSearch(message, searchResults);
 
     return NextResponse.json({
       response: finalResponse,
@@ -170,11 +291,9 @@ export async function POST(request: NextRequest) {
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
-    console.error("Chat API unexpected error:", err);
-
+    console.error("Chat API error:", err);
     return NextResponse.json({
-      response:
-        "I apologize, but I'm experiencing technical difficulties at the moment. Please try again later.",
+      response: "I apologize, but something went wrong. Please try again later.",
       sources: [],
       timestamp: new Date().toISOString(),
       error: err?.message || String(err),
@@ -182,7 +301,9 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// Health check
+/* -------------------------
+   GET ROUTE (Health Check)
+------------------------- */
 export async function GET() {
   return NextResponse.json({
     status: "healthy",
