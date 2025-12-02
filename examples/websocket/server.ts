@@ -115,10 +115,12 @@ io.on('connection', (socket) => {
   })
 })
 
-const PORT = 3003
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3003;
+
 httpServer.listen(PORT, () => {
-  console.log(`WebSocket server running on port ${PORT}`)
-})
+  console.log(`WebSocket server running on port ${PORT}`);
+});
+
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
